@@ -94,6 +94,35 @@ function Resolve-NpxCmd {
     return $null
 }
 
+function Find-SystemBrowser {
+    $candidates = @(
+        "C:\Program Files\Google\Chrome\Application\chrome.exe",
+        "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        "C:\Program Files\Chromium\Application\chromium.exe",
+        "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe",
+        "$env:LOCALAPPDATA\Chromium\Application\chromium.exe",
+        "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        "C:\Program Files\Microsoft\Edge\Application\msedge.exe"
+    )
+    foreach ($path in $candidates) {
+        if (Test-Path $path) { return $path }
+    }
+    return $null
+}
+
+function Write-BrowserEnv {
+    param([string]$BrowserPath)
+    $envFile = "$HermesHome\.env"
+    if (-not (Test-Path $envFile)) { return }
+    $content = Get-Content $envFile -Raw -ErrorAction SilentlyContinue
+    if ($content -and $content -match "AGENT_BROWSER_EXECUTABLE_PATH=") {
+        Write-Info "AGENT_BROWSER_EXECUTABLE_PATH already configured"
+        return
+    }
+    Add-Content -Path $envFile -Value "`n# Hermes Agent browser tools - use the system browser.`nAGENT_BROWSER_EXECUTABLE_PATH=$BrowserPath"
+    Write-Success "Configured browser tools to use $BrowserPath"
+}
+
 function Install-AgentBrowser {
     param([string]$BrowserDir, [string]$NpmExe, [string]$LogPrefix)
 
@@ -102,7 +131,7 @@ function Install-AgentBrowser {
     }
     $pkgJson = "$BrowserDir\package.json"
     if (-not (Test-Path $pkgJson)) {
-        '{"name":"hermes-browser-deps","version":"1.0.0","dependencies":{"agent-browser":"*"}}' | Out-File -FilePath $pkgJson -Encoding utf8 -NoNewline
+        '{"name":"hermes-browser-deps","version":"1.0.0","dependencies":{"agent-browser":"^0.26.0","@askjo/camofox-browser":"^1.5.2"}}' | Out-File -FilePath $pkgJson -Encoding utf8 -NoNewline
     }
 
     Write-Info "Installing agent-browser to $BrowserDir..."
@@ -1627,6 +1656,14 @@ function Invoke-EnsureMode {
             "browser" {
                 [void](Test-Node)
                 if ($script:HasNode) {
+                    # Check for system browser first — skip Playwright download if found
+                    $systemBrowser = Find-SystemBrowser
+                    if ($systemBrowser) {
+                        Write-Success "System browser found: $systemBrowser"
+                        Write-Info "Skipping Playwright Chromium download."
+                        Write-BrowserEnv -BrowserPath $systemBrowser
+                    }
+
                     $npmExe = Resolve-NpmCmd
                     if (-not $npmExe) {
                         Write-Warn "npm not found — cannot install browser deps."
@@ -1668,11 +1705,19 @@ function Invoke-PostInstallMode {
     Install-SystemPackages
 
     if ($script:HasNode) {
+        # Check for system browser first — skip Playwright download if found
+        $systemBrowser = Find-SystemBrowser
+        if ($systemBrowser) {
+            Write-Success "System browser found: $systemBrowser"
+            Write-Info "Skipping Playwright Chromium download."
+            Write-BrowserEnv -BrowserPath $systemBrowser
+        }
+
         $npmExe = Resolve-NpmCmd
         if ($npmExe) {
             Install-AgentBrowser -BrowserDir "$HermesHome\agent-browser" -NpmExe $npmExe -LogPrefix "postinstall"
         } else {
-            Write-Warn "npm not found — skipping Playwright Chromium install."
+            Write-Warn "npm not found — skipping browser tools install."
         }
     }
 
