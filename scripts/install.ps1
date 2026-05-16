@@ -1,4 +1,4 @@
-# ============================================================================
+﻿# ============================================================================
 # Hermes Agent Installer for Windows
 # ============================================================================
 # Installation script for Windows (PowerShell).
@@ -17,7 +17,18 @@ param(
     [switch]$SkipSetup,
     [string]$Branch = "main",
     [string]$HermesHome = "$env:LOCALAPPDATA\hermes",
-    [string]$InstallDir = "$env:LOCALAPPDATA\hermes\hermes-agent"
+    [string]$InstallDir = "$env:LOCALAPPDATA\hermes\hermes-agent",
+
+    # --- Stage protocol (additive; default invocation behaves as before) ----
+    # See the "Stage protocol" section near the bottom of the file for the
+    # full contract.  Intended for programmatic drivers (the desktop GUI's
+    # onboarding wizard, CI, future install.sh parity, etc.).  CLI users
+    # running the canonical `irm | iex` one-liner never touch these flags.
+    [switch]$Manifest,
+    [string]$Stage,
+    [switch]$ProtocolVersion,
+    [switch]$NonInteractive,
+    [switch]$Json
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,6 +41,11 @@ $RepoUrlSsh = "git@github.com:NousResearch/hermes-agent.git"
 $RepoUrlHttps = "https://github.com/NousResearch/hermes-agent.git"
 $PythonVersion = "3.11"
 $NodeVersion = "22"
+
+# Stage-protocol version.  Bumped only for genuinely breaking changes to the
+# manifest schema, stage-name set semantics, or stdout JSON shape.  Adding a
+# new stage does NOT bump this — drivers iterate the manifest dynamically.
+$InstallStageProtocolVersion = 1
 
 # ============================================================================
 # Helper functions
@@ -1412,20 +1428,28 @@ function Invoke-SetupWizard {
         Write-Info "Skipping setup wizard (-SkipSetup)"
         return
     }
-    
+
+    if ($NonInteractive) {
+        # The setup wizard prompts for API keys, model choice, persona, etc.
+        # Non-interactive callers (GUI installer) own that UX themselves; let
+        # them drive it after install.ps1 returns.
+        Write-Info "Skipping setup wizard (non-interactive). Configure via the GUI or 'hermes setup'."
+        return
+    }
+
     Write-Host ""
     Write-Info "Starting setup wizard..."
     Write-Host ""
-    
+
     Push-Location $InstallDir
-    
+
     # Run hermes setup using the venv Python directly (no activation needed)
     if (-not $NoVenv) {
         & ".\venv\Scripts\python.exe" -m hermes_cli.main setup
     } else {
         python -m hermes_cli.main setup
     }
-    
+
     Pop-Location
 }
 
@@ -1455,13 +1479,20 @@ function Start-GatewayIfConfigured {
         Write-Info "WhatsApp is enabled but not yet paired."
         Write-Info "Running 'hermes whatsapp' to pair via QR code..."
         Write-Host ""
-        $response = Read-Host "Pair WhatsApp now? [Y/n]"
-        if ($response -eq "" -or $response -match "^[Yy]") {
-            try {
-                & $hermesCmd whatsapp
-            } catch {
-                # Expected after pairing completes
+        # Non-interactive callers (GUI installer, CI) skip the QR-pair prompt;
+        # WhatsApp pairing requires a human looking at a phone camera, so the
+        # downstream UI is responsible for surfacing this when it makes sense.
+        if (-not $NonInteractive) {
+            $response = Read-Host "Pair WhatsApp now? [Y/n]"
+            if ($response -eq "" -or $response -match "^[Yy]") {
+                try {
+                    & $hermesCmd whatsapp
+                } catch {
+                    # Expected after pairing completes
+                }
             }
+        } else {
+            Write-Info "Skipping WhatsApp pairing prompt (non-interactive)."
         }
     }
 
@@ -1469,6 +1500,16 @@ function Start-GatewayIfConfigured {
     Write-Info "Messaging platform token detected!"
     Write-Info "The gateway handles messaging platforms and cron job execution."
     Write-Host ""
+
+    # In non-interactive mode the gateway lifecycle is the caller's problem
+    # (the GUI manages its own gateway process, CI doesn't want background
+    # services on the build agent, etc.).  Treat it like the user declined.
+    if ($NonInteractive) {
+        Write-Info "Skipping gateway autostart prompt (non-interactive)."
+        Write-Info "Start the gateway later with: hermes gateway"
+        return
+    }
+
     $response = Read-Host "Would you like to start the gateway now? [Y/n]"
 
     if ($response -eq "" -or $response -match "^[Yy]") {
@@ -1548,18 +1589,129 @@ function Write-Completion {
 }
 
 # ============================================================================
-# Main
+# Stage protocol
+# ============================================================================
+#
+# install.ps1 supports a small, stable "stage protocol" that lets programmatic
+# callers (the desktop GUI's onboarding wizard, CI, future install.sh, etc.)
+# drive the install one step at a time and surface progress/errors with their
+# own UI.  CLI users running the canonical `irm | iex` one-liner never
+# encounter this — default invocation behaves exactly as before.
+#
+# Entry points:
+#
+#   install.ps1                       Interactive install (today's behavior).
+#   install.ps1 -ProtocolVersion      Emit the protocol version integer.
+#   install.ps1 -Manifest             Emit the stage manifest as JSON.
+#   install.ps1 -Stage <name>         Run one stage and emit its result.
+#   install.ps1 -NonInteractive       Disable all Read-Host prompts (also
+#                                     skips the setup wizard and the gateway
+#                                     autostart prompt).  Can be combined
+#                                     with default invocation to do a full
+#                                     non-interactive install.
+#   install.ps1 -Json                 Emit machine-readable JSON instead of
+#                                     the human-readable success banner at
+#                                     the end of a full install.
+#
+# Manifest schema (the JSON returned by -Manifest):
+#
+#   {
+#     "protocol_version": 1,
+#     "stages": [
+#       {
+#         "name": "uv",
+#         "title": "Installing uv package manager",
+#         "category": "prereqs",
+#         "needs_user_input": false
+#       },
+#       ...
+#     ]
+#   }
+#
+# Stage result (the JSON written by -Stage <name>):
+#
+#   {
+#     "stage": "uv",
+#     "ok": true,
+#     "skipped": false,
+#     "reason": null,
+#     "duration_ms": 1234
+#   }
+#
+# Exit codes:
+#
+#   0 — success (stage ran, or stage was deliberately skipped).
+#   1 — generic failure; the stage threw.
+#   2 — unknown stage name passed to -Stage.
+#
+# Adding a stage:
+#
+#   1. Append an entry to $InstallStages below.
+#   2. Make sure the worker function it points at is idempotent and respects
+#      $NonInteractive when it has prompts.  Add it before "configure"
+#      (the wizard) or "gateway" (autostart) if it should run unconditionally;
+#      after those if it's optional post-install glue.
+#   3. Do NOT bump $InstallStageProtocolVersion — adding stages is additive.
+#      Drivers iterate the manifest dynamically.
+#
 # ============================================================================
 
-function Main {
-    Write-Banner
+# Stage definitions — the single source of truth.  Each entry maps a stable
+# stage name (the API contract drivers depend on) to the worker function that
+# implements it.  ``Title`` is what UIs show; ``Category`` lets UIs group
+# stages; ``NeedsUserInput`` tells UIs "this stage prompts — either skip it
+# or arrange to provide answers another way."
+$InstallStages = @(
+    @{ Name = "uv";               Title = "Installing uv package manager";        Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Uv" }
+    @{ Name = "python";           Title = "Verifying Python $PythonVersion";      Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Python" }
+    @{ Name = "git";              Title = "Installing Git";                       Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Git" }
+    @{ Name = "node";             Title = "Detecting Node.js";                    Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Node" }
+    @{ Name = "system-packages";  Title = "Installing ripgrep and ffmpeg";        Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-SystemPackages" }
+    @{ Name = "repository";       Title = "Cloning Hermes repository";            Category = "install";      NeedsUserInput = $false; Worker = "Stage-Repository" }
+    @{ Name = "venv";             Title = "Creating Python virtual environment";  Category = "install";      NeedsUserInput = $false; Worker = "Stage-Venv" }
+    @{ Name = "dependencies";     Title = "Installing Python dependencies";       Category = "install";      NeedsUserInput = $false; Worker = "Stage-Dependencies" }
+    @{ Name = "node-deps";        Title = "Installing Node.js dependencies";      Category = "install";      NeedsUserInput = $false; Worker = "Stage-NodeDeps" }
+    @{ Name = "path";             Title = "Adding Hermes to PATH";                Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-Path" }
+    @{ Name = "config-templates"; Title = "Writing configuration templates";      Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-ConfigTemplates" }
+    @{ Name = "platform-sdks";    Title = "Installing messaging platform SDKs";   Category = "finalize";     NeedsUserInput = $false; Worker = "Stage-PlatformSdks" }
+    # Interactive stages.  In non-interactive mode these become no-ops; the
+    # caller (GUI / CI) handles the equivalent UX themselves.
+    @{ Name = "configure";        Title = "Configuring API keys and models";      Category = "post-install"; NeedsUserInput = $true;  Worker = "Stage-Configure" }
+    @{ Name = "gateway";          Title = "Starting messaging gateway";           Category = "post-install"; NeedsUserInput = $true;  Worker = "Stage-Gateway" }
+)
 
+# Stage workers — thin wrappers that delegate to the existing Install-* /
+# Test-* / Invoke-* functions while preserving their error semantics.  Kept
+# as a separate layer so the existing functions remain callable directly
+# (helpful for one-off recovery: ``. install.ps1; Install-Venv``).
+function Stage-Uv               { if (-not (Install-Uv))     { throw "uv installation failed" } }
+function Stage-Python           { if (-not (Test-Python))    { throw "Python $PythonVersion not available" } }
+function Stage-Git              { if (-not (Install-Git))    { throw "Git not available and auto-install failed — install from https://git-scm.com/download/win then re-run" } }
+function Stage-Node             { [void](Test-Node) }
+function Stage-SystemPackages   { Install-SystemPackages }
+function Stage-Repository       { Install-Repository }
+function Stage-Venv             { Install-Venv }
+function Stage-Dependencies     { Install-Dependencies }
+function Stage-NodeDeps         { Install-NodeDeps }
+function Stage-Path             { Set-PathVariable }
+function Stage-ConfigTemplates  { Copy-ConfigTemplates }
+function Stage-PlatformSdks     { Install-PlatformSdks }
+function Stage-Configure        { Invoke-SetupWizard }
+function Stage-Gateway          { Start-GatewayIfConfigured }
+
+function Get-InstallStage {
+    param([string]$Name)
+    foreach ($s in $InstallStages) {
+        if ($s.Name -eq $Name) { return $s }
+    }
+    return $null
+}
+
+function Step-OutOfInstallDir {
     # Windows refuses to delete a directory any shell is currently cd'd
     # inside — and silently leaves orphan files behind, which then wedge
-    # "is this a valid git repo" probes on re-install.  If the current
-    # working dir is under $InstallDir, step out to the user's home
-    # BEFORE doing anything else.  Harmless when the user ran the
-    # installer from somewhere else.
+    # "is this a valid git repo" probes on re-install.  Harmless when the
+    # caller ran the installer from somewhere else.
     try {
         $currentResolved = (Get-Location).ProviderPath
         $installResolved = $null
@@ -1571,36 +1723,124 @@ function Main {
             Set-Location $env:USERPROFILE
         }
     } catch {}
-
-    if (-not (Install-Uv)) { throw "uv installation failed — cannot continue" }
-    if (-not (Test-Python)) { throw "Python $PythonVersion not available — cannot continue" }
-    if (-not (Install-Git)) { throw "Git not available and auto-install failed — install from https://git-scm.com/download/win then re-run" }
-    # Test-Node always returns $true (sets $script:HasNode on success, emits a
-    # warning on failure and continues so non-browser installs still work).
-    # Cast to [void] so the bare return value doesn't print "True" to the
-    # console between the "Node found" line and the next installer step.
-    [void](Test-Node)
-    Install-SystemPackages  # ripgrep + ffmpeg in one step
-
-    Install-Repository
-    Install-Venv
-    Install-Dependencies
-    Install-NodeDeps
-    Set-PathVariable
-    Copy-ConfigTemplates
-    Invoke-SetupWizard
-    Install-PlatformSdks
-    Start-GatewayIfConfigured
-
-    Write-Completion
 }
 
-# Wrap in try/catch so errors don't kill the terminal when run via:
-#   irm https://...install.ps1 | iex
-# (exit/throw inside iex kills the entire PowerShell session)
+function Invoke-Stage {
+    param(
+        [Parameter(Mandatory=$true)] [hashtable]$StageDef
+    )
+
+    $start = [DateTime]::UtcNow
+    $result = @{
+        stage        = $StageDef.Name
+        ok           = $false
+        skipped      = $false
+        reason       = $null
+        duration_ms  = 0
+    }
+
+    try {
+        & $StageDef.Worker
+        $result.ok = $true
+    } catch {
+        $result.ok = $false
+        $result.reason = "$_"
+        throw
+    } finally {
+        $result.duration_ms = [int]([DateTime]::UtcNow - $start).TotalMilliseconds
+        if ($Json -or $Stage) {
+            # In stage-driver mode every stage emits a JSON line so the
+            # caller can stream progress.  In default interactive mode we
+            # stay silent here (the worker already wrote human output).
+            $result | ConvertTo-Json -Compress | Write-Output
+        }
+    }
+}
+
+# ============================================================================
+# Main
+# ============================================================================
+
+function Invoke-AllStages {
+    Step-OutOfInstallDir
+    foreach ($s in $InstallStages) {
+        Invoke-Stage -StageDef $s
+    }
+}
+
+function Main {
+    Write-Banner
+    Invoke-AllStages
+    if (-not $Json) {
+        Write-Completion
+    } else {
+        @{ ok = $true; protocol_version = $InstallStageProtocolVersion } | ConvertTo-Json -Compress | Write-Output
+    }
+}
+
+# ----------------------------------------------------------------------------
+# Entry-point dispatch
+# ----------------------------------------------------------------------------
+#
+# All branches funnel through one try/catch so errors don't kill an `irm |
+# iex` PowerShell session, and so failures in stage-driver mode produce a
+# structured JSON error frame instead of a bare exception.
+
 try {
+    if ($ProtocolVersion) {
+        Write-Output $InstallStageProtocolVersion
+        exit 0
+    }
+
+    if ($Manifest) {
+        $payload = @{
+            protocol_version = $InstallStageProtocolVersion
+            stages = @($InstallStages | ForEach-Object {
+                @{
+                    name             = $_.Name
+                    title            = $_.Title
+                    category         = $_.Category
+                    needs_user_input = $_.NeedsUserInput
+                }
+            })
+        }
+        $payload | ConvertTo-Json -Depth 5 -Compress | Write-Output
+        exit 0
+    }
+
+    if ($Stage) {
+        $def = Get-InstallStage -Name $Stage
+        if (-not $def) {
+            $err = @{
+                ok     = $false
+                stage  = $Stage
+                reason = "unknown stage: $Stage. Run install.ps1 -Manifest to list valid stages."
+            }
+            $err | ConvertTo-Json -Compress | Write-Output
+            exit 2
+        }
+        Step-OutOfInstallDir
+        Invoke-Stage -StageDef $def
+        exit 0
+    }
+
+    # Default: full install (today's behavior, plus optional -NonInteractive
+    # and -Json layered on by the params above).
     Main
 } catch {
+    if ($Json -or $Stage) {
+        # Stage-driver mode: caller wants JSON they can parse.  Emit a
+        # structured error frame and exit non-zero.
+        $err = @{
+            ok     = $false
+            stage  = if ($Stage) { $Stage } else { $null }
+            reason = "$_"
+        }
+        $err | ConvertTo-Json -Compress | Write-Output
+        exit 1
+    }
+
+    # Interactive mode: keep today's friendly recovery hint.
     Write-Host ""
     Write-Err "Installation failed: $_"
     Write-Host ""
