@@ -23,6 +23,7 @@ export default function KioskView({ onAdminUnlock }: { onAdminUnlock: () => void
   const [bookArrival, setBookArrival] = useState(today);
   const [bookDeparture, setBookDeparture] = useState(tomorrow);
   const [bookStayClass, setBookStayClass] = useState<"short"|"medium"|"long">("short");
+  const [bookCadenceDays, setBookCadenceDays] = useState<number>(7);
 
   const [lookup, setLookup] = useState<any | null>(null);
   const [bookingResult, setBookingResult] = useState<any | null>(null);
@@ -78,6 +79,7 @@ export default function KioskView({ onAdminUnlock }: { onAdminUnlock: () => void
         rate_per_night: 149,
         party_size: 1,
         stay_class: bookStayClass,
+        weekly_housekeeping_cadence_days: (bookStayClass === "medium" || bookStayClass === "long") ? bookCadenceDays : undefined,
       });
       setBookingResult(created);
     } catch (e: any) {
@@ -173,6 +175,9 @@ export default function KioskView({ onAdminUnlock }: { onAdminUnlock: () => void
             <option value="medium">Medium stay</option>
             <option value="long">Long stay</option>
           </select>
+          {(bookStayClass === "medium" || bookStayClass === "long") ? (
+            <input aria-label="Weekly housekeeping cadence days" type="number" min={1} max={30} className="bg-slate-800 rounded px-3 py-4" value={bookCadenceDays} onChange={e=>setBookCadenceDays(Number(e.target.value || 7))} />
+          ) : null}
           <button className="bg-purple-600 rounded px-4 py-4 text-white text-base" disabled={busy}>Book Now</button>
         </form>
         {bookingResult && (
