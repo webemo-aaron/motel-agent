@@ -15,7 +15,7 @@ import os
 import uuid
 import requests
 from pathlib import Path
-from datetime import date, datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta, time
 from typing import AsyncGenerator, Optional
 
 try:
@@ -121,6 +121,12 @@ class WorkOrderPatch(BaseModel):
 
 class TaskRunUpdateBody(BaseModel):
     assignee: str = ""
+
+
+class WeeklyHousekeepingPlanBody(BaseModel):
+    reservation_id: str
+    cadence_days: int = 7
+    first_service_date: Optional[str] = None
 
 
 class VoiceSettingsBody(BaseModel):
@@ -1091,6 +1097,7 @@ class KioskBookRequest(BaseModel):
     phone: Optional[str] = ""
     party_size: int = 1
     stay_class: Optional[str] = None
+    weekly_housekeeping_cadence_days: Optional[int] = None
 
 
 class OperatorAlertBody(BaseModel):
@@ -1182,6 +1189,9 @@ def kiosk_book(body: KioskBookRequest):
                 },
             )
         stay_class = supplied or inferred
+        notes = [f"stay_class:{stay_class}"]
+        if body.weekly_housekeeping_cadence_days:
+            notes.append(f"weekly_hk_cadence:{int(body.weekly_housekeeping_cadence_days)}")
         rec = get_db().booking_create(
             guest_name=body.guest_name,
             check_in=body.check_in,
@@ -1192,9 +1202,29 @@ def kiosk_book(body: KioskBookRequest):
             phone=body.phone or "",
             source="kiosk",
             party_size=body.party_size,
-            special_requests=f"stay_class:{stay_class}",
+            special_requests=';'.join(notes),
         )
         rec["stay_class"] = stay_class
+        rec["weekly_housekeeping_cadence_days"] = body.weekly_housekeeping_cadence_days
+        if stay_class in {"medium", "long"} and body.weekly_housekeeping_cadence_days:
+            cadence = int(body.weekly_housekeeping_cadence_days)
+            if cadence < 1 or cadence > 30:
+                raise HTTPException(status_code=400, detail='weekly_housekeeping_cadence_days must be 1..30')
+            plans = _read_housekeeping_plans()
+            plan = {
+                'plan_id': f"hp_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}",
+                'reservation_id': str(rec.get('id')),
+                'room_id': str(rec.get('room_id')),
+                'stay_class': stay_class,
+                'cadence_days': cadence,
+                'start_date': (date.fromisoformat(body.check_in) + timedelta(days=cadence)).isoformat(),
+                'end_date': body.check_out,
+                'active': True,
+                'created_at': datetime.now(timezone.utc).isoformat(),
+            }
+            plans.append(plan)
+            _write_housekeeping_plans(plans)
+            _sync_housekeeping_recurrence_runs()
         return rec
     except HTTPException:
         raise
@@ -1626,6 +1656,73 @@ def _read_task_runs() -> list[dict]:
 def _write_task_runs(items: list[dict]) -> None:
     _task_runs_path().write_text("\n".join(json.dumps(i, ensure_ascii=False) for i in items) + ("\n" if items else ""), encoding='utf-8')
 
+
+def _housekeeping_plans_path() -> Path:
+    return DATA_DIR / "housekeeping_recurrence_plans.jsonl"
+
+
+def _read_housekeeping_plans() -> list[dict]:
+    p = _housekeeping_plans_path()
+    if not p.exists():
+        return []
+    out: list[dict] = []
+    for ln in p.read_text(encoding='utf-8').splitlines():
+        try:
+            obj = json.loads(ln)
+            if isinstance(obj, dict):
+                out.append(obj)
+        except Exception:
+            continue
+    return out
+
+
+def _write_housekeeping_plans(items: list[dict]) -> None:
+    _housekeeping_plans_path().write_text("\n".join(json.dumps(i, ensure_ascii=False) for i in items) + ("\n" if items else ""), encoding='utf-8')
+
+
+def _sync_housekeeping_recurrence_runs(now_dt: Optional[datetime] = None) -> int:
+    now_dt = now_dt or datetime.now(timezone.utc)
+    runs = _read_task_runs()
+    run_keys = {(str(r.get('reservation_id','')), str(r.get('plan_id','')), str(r.get('due_on',''))) for r in runs}
+    plans = [p for p in _read_housekeeping_plans() if str(p.get('active','true')).lower() != 'false']
+    created = 0
+    for plan in plans:
+        reservation_id = str(plan.get('reservation_id',''))
+        room_id = str(plan.get('room_id',''))
+        plan_id = str(plan.get('plan_id',''))
+        cadence = max(1, int(plan.get('cadence_days', 7) or 7))
+        try:
+            start_date = date.fromisoformat(str(plan.get('start_date')))
+            end_date = date.fromisoformat(str(plan.get('end_date')))
+        except Exception:
+            continue
+        d = start_date
+        while d < end_date:
+            key = (reservation_id, plan_id, d.isoformat())
+            if key not in run_keys:
+                due_at = datetime.combine(d, time(11,0), tzinfo=timezone.utc)
+                runs.append({
+                    'task_run_id': f"wk_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}",
+                    'plan_id': plan_id,
+                    'reservation_id': reservation_id,
+                    'room_id': room_id,
+                    'task_type': 'weekly_housekeeping',
+                    'status': 'open',
+                    'created_at': now_dt.isoformat(),
+                    'started_at': None,
+                    'completed_at': None,
+                    'assignee': '',
+                    'source': 'weekly_recurrence',
+                    'due_on': d.isoformat(),
+                    'due_at': due_at.isoformat(),
+                    'sla_state': 'overdue' if now_dt > due_at else 'due',
+                })
+                run_keys.add(key)
+                created += 1
+            d += timedelta(days=cadence)
+    if created:
+        _write_task_runs(runs)
+    return created
 
 def _create_turnover_task_run(room_id: str, source: str = 'checkout') -> dict:
     task_id = f"tr_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
@@ -3040,10 +3137,67 @@ def run_manager_audit_retention(request: Request, payload: dict | None = None):
     return {'ok': True, **result}
 
 
+@app.post('/api/motel/manager/housekeeping/weekly-plans')
+def create_weekly_housekeeping_plan(body: WeeklyHousekeepingPlanBody, request: Request):
+    _require_manager_role(request, {'manager','admin','frontdesk'})
+    actor = _require_manager_write(request)
+    reservation = _reservation_by_id(body.reservation_id)
+    if not reservation:
+        raise HTTPException(status_code=404, detail='reservation not found')
+    stay_class = _serialize_stay_class(reservation, _load_manager_config())
+    if stay_class not in {'medium','long'}:
+        raise HTTPException(status_code=400, detail='weekly_housekeeping_requires_medium_or_long_stay')
+    cadence = int(body.cadence_days or 7)
+    if cadence < 1 or cadence > 30:
+        raise HTTPException(status_code=400, detail='cadence_days must be 1..30')
+    check_in = str(reservation.get('check_in'))
+    check_out = str(reservation.get('check_out'))
+    first = body.first_service_date or (date.fromisoformat(check_in) + timedelta(days=cadence)).isoformat()
+    plan = {
+        'plan_id': f"hp_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}",
+        'reservation_id': str(reservation.get('id')),
+        'room_id': str(reservation.get('room_id')),
+        'stay_class': stay_class,
+        'cadence_days': cadence,
+        'start_date': first,
+        'end_date': check_out,
+        'active': True,
+        'created_at': datetime.now(timezone.utc).isoformat(),
+    }
+    plans = _read_housekeeping_plans()
+    plans.append(plan)
+    _write_housekeeping_plans(plans)
+    created = _sync_housekeeping_recurrence_runs()
+    _append_manager_audit('housekeeping_weekly_plan_create', actor=actor, metadata={'plan_id': plan['plan_id'], 'reservation_id': plan['reservation_id'], 'created_runs': created})
+    return {'ok': True, 'plan': plan, 'created_runs': created}
+
+
+@app.get('/api/motel/manager/housekeeping/weekly-plans')
+def list_weekly_housekeeping_plans(request: Request):
+    _require_manager_role(request, {'viewer','frontdesk','manager','admin'})
+    return {'items': list(reversed(_read_housekeeping_plans()))}
+
+
 @app.get('/api/motel/manager/housekeeping/task-runs')
 def list_housekeeping_task_runs(request: Request, status: str | None = None):
     _require_manager_role(request, {'viewer','frontdesk','manager','admin'})
+    _sync_housekeeping_recurrence_runs()
     items = _read_task_runs()
+    now_dt = datetime.now(timezone.utc)
+    for i in items:
+        if str(i.get('status')) in {'completed','cancelled'}:
+            i['sla_state'] = 'met'
+            continue
+        due_at_raw = i.get('due_at')
+        if due_at_raw:
+            try:
+                due_dt = datetime.fromisoformat(str(due_at_raw))
+                i['sla_state'] = 'overdue' if now_dt > due_dt else 'due'
+            except Exception:
+                i['sla_state'] = 'due'
+        else:
+            i['sla_state'] = i.get('sla_state') or 'due'
+    _write_task_runs(items)
     if status:
         items = [i for i in items if str(i.get('status', '')) == status]
     items.reverse()

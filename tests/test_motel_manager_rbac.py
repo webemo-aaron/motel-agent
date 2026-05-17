@@ -835,3 +835,65 @@ def test_medium_stay_displacement_score_recommendations(tmp_path, monkeypatch):
         "rate_per_night": 160,
     })
     assert bad.status_code == 400
+
+
+def test_weekly_housekeeping_plan_creates_recurring_runs_and_sla(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch, "production")
+    headers = {
+        "x-manager-token": "testtoken",
+        "x-authenticated-user": "m1",
+        "x-authenticated-role": "manager",
+    }
+    seed = client.patch('/api/motel/rooms/ms-room-1', json={"status": "available", "notes": "seed"})
+    assert seed.status_code == 200
+    book = client.post('/api/motel/kiosk/book', json={
+        "guest_name": "HK Guest",
+        "check_in": "2031-10-01",
+        "check_out": "2031-10-20",
+        "room_id": "ms-room-1",
+        "rate_per_night": 129,
+        "stay_class": "medium",
+    })
+    assert book.status_code == 200
+    rid = book.json()["id"]
+
+    plan = client.post('/api/motel/manager/housekeeping/weekly-plans', headers=headers, json={
+        "reservation_id": rid,
+        "cadence_days": 7,
+        "first_service_date": "2031-10-08",
+    })
+    assert plan.status_code == 200
+    assert plan.json()["plan"]["cadence_days"] == 7
+
+    runs = client.get('/api/motel/manager/housekeeping/task-runs', headers=headers)
+    assert runs.status_code == 200
+    weekly = [i for i in runs.json()["items"] if i.get("task_type") == "weekly_housekeeping" and i.get("reservation_id") == rid]
+    assert len(weekly) >= 1
+    assert weekly[0]["sla_state"] in {"due", "overdue", "met"}
+
+
+def test_weekly_housekeeping_plan_rejects_short_stay(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch, "production")
+    headers = {
+        "x-manager-token": "testtoken",
+        "x-authenticated-user": "m1",
+        "x-authenticated-role": "manager",
+    }
+    seed = client.patch('/api/motel/rooms/ms-room-2', json={"status": "available", "notes": "seed"})
+    assert seed.status_code == 200
+    book = client.post('/api/motel/kiosk/book', json={
+        "guest_name": "Short HK",
+        "check_in": "2031-11-01",
+        "check_out": "2031-11-03",
+        "room_id": "ms-room-2",
+        "rate_per_night": 129,
+        "stay_class": "short",
+    })
+    assert book.status_code == 200
+    rid = book.json()["id"]
+
+    plan = client.post('/api/motel/manager/housekeeping/weekly-plans', headers=headers, json={
+        "reservation_id": rid,
+        "cadence_days": 7,
+    })
+    assert plan.status_code == 400
