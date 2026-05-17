@@ -121,6 +121,9 @@ class WorkOrderPatch(BaseModel):
 
 class TaskRunUpdateBody(BaseModel):
     assignee: str = ""
+    outcome: Optional[str] = None
+    notes: Optional[str] = ""
+    reschedule_for: Optional[str] = None
 
 
 class WeeklyHousekeepingPlanBody(BaseModel):
@@ -3178,6 +3181,19 @@ def list_weekly_housekeeping_plans(request: Request):
     return {'items': list(reversed(_read_housekeeping_plans()))}
 
 
+
+
+def _housekeeping_miss_count(reservation_id: str, task_type: str = 'weekly_housekeeping') -> int:
+    count = 0
+    for r in _read_task_runs():
+        if str(r.get('reservation_id')) != str(reservation_id):
+            continue
+        if str(r.get('task_type', '')) != task_type:
+            continue
+        if str(r.get('outcome', '')) in {'guest_declined', 'no_access'}:
+            count += 1
+    return count
+
 @app.get('/api/motel/manager/housekeeping/task-runs')
 def list_housekeeping_task_runs(request: Request, status: str | None = None):
     _require_manager_role(request, {'viewer','frontdesk','manager','admin'})
@@ -3225,14 +3241,30 @@ def complete_housekeeping_task_run(task_run_id: str, body: TaskRunUpdateBody, re
     _require_manager_role(request, {'manager','admin','frontdesk'})
     actor = _require_manager_write(request)
     items = _read_task_runs()
+    valid_outcomes = {'completed', 'guest_declined', 'no_access', 'rescheduled'}
     for it in items:
         if str(it.get('task_run_id')) == task_run_id:
-            it['status'] = 'completed'
+            outcome = (body.outcome or 'completed').strip().lower()
+            if outcome not in valid_outcomes:
+                raise HTTPException(status_code=400, detail='invalid_outcome')
+            it['status'] = 'completed' if outcome == 'completed' else ('open' if outcome == 'rescheduled' else 'completed')
+            it['outcome'] = outcome
+            it['notes'] = body.notes or ''
             it['started_at'] = it.get('started_at') or datetime.now(timezone.utc).isoformat()
-            it['completed_at'] = datetime.now(timezone.utc).isoformat()
+            it['completed_at'] = datetime.now(timezone.utc).isoformat() if outcome != 'rescheduled' else None
             if body.assignee.strip():
                 it['assignee'] = body.assignee.strip()
+            if outcome == 'rescheduled' and body.reschedule_for:
+                it['reschedule_for'] = body.reschedule_for
+                it['due_on'] = body.reschedule_for
+                it['due_at'] = datetime.combine(date.fromisoformat(body.reschedule_for), time(11,0), tzinfo=timezone.utc).isoformat()
             _write_task_runs(items)
-            _append_manager_audit('housekeeping_task_complete', actor=actor, metadata={'task_run_id': task_run_id, 'room_id': it.get('room_id'), 'assignee': it.get('assignee')})
-            return {'ok': True, 'item': it}
+            misses = _housekeeping_miss_count(str(it.get('reservation_id','')))
+            escalated = False
+            if outcome in {'guest_declined','no_access'} and misses >= 2:
+                msg = f"Housekeeping missed-service escalation: reservation {it.get('reservation_id')} room {it.get('room_id')} outcome={outcome} misses={misses}"
+                get_db().alert_create(message=msg, alert_type='complaint', room_id=str(it.get('room_id') or ''), reservation_id=str(it.get('reservation_id') or ''))
+                escalated = True
+            _append_manager_audit('housekeeping_task_complete', actor=actor, metadata={'task_run_id': task_run_id, 'room_id': it.get('room_id'), 'assignee': it.get('assignee'), 'outcome': outcome, 'reschedule_for': it.get('reschedule_for',''), 'escalated': escalated})
+            return {'ok': True, 'item': it, 'escalated': escalated, 'miss_count': misses}
     raise HTTPException(status_code=404, detail='task_run_not_found')

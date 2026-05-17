@@ -897,3 +897,68 @@ def test_weekly_housekeeping_plan_rejects_short_stay(tmp_path, monkeypatch):
         "cadence_days": 7,
     })
     assert plan.status_code == 400
+
+
+def test_housekeeping_missed_service_outcomes_and_escalation(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch, "production")
+    headers = {
+        "x-manager-token": "testtoken",
+        "x-authenticated-user": "m1",
+        "x-authenticated-role": "manager",
+    }
+    seed = client.patch('/api/motel/rooms/ms-room-9', json={"status": "available", "notes": "seed"})
+    assert seed.status_code == 200
+    book = client.post('/api/motel/kiosk/book', json={
+        "guest_name": "Miss Flow",
+        "check_in": "2031-12-01",
+        "check_out": "2031-12-20",
+        "room_id": "ms-room-9",
+        "rate_per_night": 129,
+        "stay_class": "medium",
+        "weekly_housekeeping_cadence_days": 7,
+    })
+    assert book.status_code == 200
+
+    runs = client.get('/api/motel/manager/housekeeping/task-runs', headers=headers)
+    assert runs.status_code == 200
+    target = next(i for i in runs.json()['items'] if i.get('task_type') == 'weekly_housekeeping' and i.get('reservation_id') == book.json()['id'])
+
+    r1 = client.post(f"/api/motel/manager/housekeeping/task-runs/{target['task_run_id']}/complete", headers=headers, json={"assignee":"hk1", "outcome":"guest_declined", "notes":"do not disturb"})
+    assert r1.status_code == 200
+    assert r1.json()['item']['outcome'] == 'guest_declined'
+    assert r1.json()['escalated'] is False
+
+    # second miss should escalate
+    # pick another run for same reservation
+    runs2 = client.get('/api/motel/manager/housekeeping/task-runs', headers=headers).json()['items']
+    second = next(i for i in runs2 if i.get('task_type') == 'weekly_housekeeping' and i.get('reservation_id') == book.json()['id'] and i.get('task_run_id') != target['task_run_id'])
+    r2 = client.post(f"/api/motel/manager/housekeeping/task-runs/{second['task_run_id']}/complete", headers=headers, json={"assignee":"hk1", "outcome":"no_access"})
+    assert r2.status_code == 200
+    assert r2.json()['escalated'] is True
+
+
+def test_housekeeping_reschedule_outcome_audited(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch, "production")
+    headers = {
+        "x-manager-token": "testtoken",
+        "x-authenticated-user": "m1",
+        "x-authenticated-role": "manager",
+    }
+    seed = client.patch('/api/motel/rooms/ms-room-8', json={"status": "available", "notes": "seed"})
+    assert seed.status_code == 200
+    book = client.post('/api/motel/kiosk/book', json={
+        "guest_name": "Resched Flow",
+        "check_in": "2031-12-01",
+        "check_out": "2031-12-20",
+        "room_id": "ms-room-8",
+        "rate_per_night": 129,
+        "stay_class": "medium",
+        "weekly_housekeeping_cadence_days": 7,
+    })
+    assert book.status_code == 200
+    runs = client.get('/api/motel/manager/housekeeping/task-runs', headers=headers).json()['items']
+    target = next(i for i in runs if i.get('task_type') == 'weekly_housekeeping' and i.get('reservation_id') == book.json()['id'])
+    rr = client.post(f"/api/motel/manager/housekeeping/task-runs/{target['task_run_id']}/complete", headers=headers, json={"outcome":"rescheduled", "reschedule_for":"2031-12-18", "notes":"guest asked tomorrow"})
+    assert rr.status_code == 200
+    assert rr.json()['item']['outcome'] == 'rescheduled'
+    assert rr.json()['item']['reschedule_for'] == '2031-12-18'

@@ -25,4 +25,5 @@ Implement, validate, merge, and close medium-stay operational capability end-to-
 - ✅ MS-201 complete (extension conflict engine + approval gate)
 - ✅ MS-202 complete (displacement scoring + recommendation)
 - ✅ MS-301 complete (weekly housekeeping recurrence + SLA state tracking)
-- ⏳ MS-302, MS-401, MS-501, MS-601, MS-602 pending
+- ✅ MS-302 complete (missed-service outcomes, escalation, reschedule audit)
+- ⏳ MS-401, MS-501, MS-601, MS-602 pending
