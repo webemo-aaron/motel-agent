@@ -21,5 +21,5 @@ Implement, validate, merge, and close medium-stay operational capability end-to-
 ## Progress
 - ✅ MS-102 closed (legal template/version system)
 - ✅ MS-103 closed (contract packet generation + signature tracking)
-- 🟡 MS-101 in progress (backend policy matrix + validation merged locally; UI/reservation integration pending)
-- ⏳ MS-103, MS-201, MS-202, MS-301, MS-302, MS-401, MS-501, MS-601, MS-602 pending
+- ✅ MS-101 complete (stay classification + policy matrix validated)
+- ⏳ MS-201, MS-202, MS-301, MS-302, MS-401, MS-501, MS-601, MS-602 pending
