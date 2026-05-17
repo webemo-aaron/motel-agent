@@ -1,0 +1,20 @@
+[Unit]
+Description=West Bethel Motel Hermes dashboard
+After=network-online.target west-bethel-motel.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/webemo-aaron/projects/webemo-hermes-agent
+Environment=HERMES_HOME=/home/webemo-aaron/projects/webemo-hermes-agent/.hermes-west-bethel
+Environment=HERMES_DASHBOARD_TUI=1
+ExecStart=/home/webemo-aaron/projects/webemo-hermes-agent/.venv/bin/python /home/webemo-aaron/projects/webemo-hermes-agent/hermes dashboard --port 9120 --host 127.0.0.1 --tui --no-open --skip-build
+Restart=always
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=60
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

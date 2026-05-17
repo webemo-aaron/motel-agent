@@ -1,0 +1,21 @@
+[Unit]
+Description=West Bethel Motel Hermes dev stack
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=/home/webemo-aaron/projects/webemo-hermes-agent
+Environment=HERMES_HOME=/home/webemo-aaron/projects/webemo-hermes-agent/.hermes-west-bethel
+Environment=HERMES_GATEWAY_SKIP_SERVICE_REFRESH=1
+ExecStart=/bin/bash /home/webemo-aaron/projects/webemo-hermes-agent/motel/scripts/start_motel.sh
+Restart=always
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=240
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
