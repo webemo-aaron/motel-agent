@@ -1,0 +1,435 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://westbethelmotel.local/schemas/rate-intelligence-api.json",
+  "title": "West Bethel Rate Intelligence API Schemas",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "GET /api/rates/health": {
+      "type": "object",
+      "required": [
+        "timestamp_utc",
+        "healthy",
+        "checks"
+      ],
+      "properties": {
+        "timestamp_utc": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "healthy": {
+          "type": "boolean"
+        },
+        "checks": {
+          "type": "object",
+          "required": [
+            "full",
+            "winter",
+            "weekend_deep"
+          ],
+          "properties": {
+            "full": {
+              "$ref": "#/$defs/checkStatus"
+            },
+            "winter": {
+              "$ref": "#/$defs/checkStatus"
+            },
+            "weekend_deep": {
+              "$ref": "#/$defs/checkStatus"
+            }
+          }
+        }
+      }
+    },
+    "GET /api/rates/snapshot": {
+      "type": "object",
+      "required": [
+        "generated_at",
+        "count",
+        "items"
+      ],
+      "properties": {
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/snapshotItem"
+          }
+        }
+      }
+    },
+    "GET /api/rates/alerts": {
+      "type": "object",
+      "required": [
+        "generated_at",
+        "count",
+        "items"
+      ],
+      "properties": {
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/alertItem"
+          }
+        }
+      }
+    },
+    "GET /api/rates/calendar": {
+      "type": "object",
+      "required": [
+        "from",
+        "to",
+        "days"
+      ],
+      "properties": {
+        "from": {
+          "type": "string",
+          "format": "date"
+        },
+        "to": {
+          "type": "string",
+          "format": "date"
+        },
+        "days": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/calendarDay"
+          }
+        }
+      }
+    },
+    "POST /api/rates/alerts/{id}/ack response": {
+      "type": "object",
+      "required": [
+        "id",
+        "acknowledged",
+        "acknowledged_at"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "acknowledged": {
+          "const": true
+        },
+        "acknowledged_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "acknowledged_by": {
+          "type": "string"
+        }
+      }
+    },
+    "POST /api/rates/simulate request": {
+      "type": "object",
+      "required": [
+        "room_type",
+        "stay_date",
+        "occupancy_percent",
+        "lead_days",
+        "dow_multiplier",
+        "occupancy_multiplier",
+        "lead_time_multiplier"
+      ],
+      "properties": {
+        "room_type": {
+          "type": "string",
+          "enum": [
+            "SQ",
+            "DF",
+            "DQ",
+            "H1",
+            "H2"
+          ]
+        },
+        "stay_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "occupancy_percent": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "lead_days": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "competitor_median_rate": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "base_rate": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "dow_multiplier": {
+          "type": "number",
+          "minimum": 0.5,
+          "maximum": 2.0
+        },
+        "occupancy_multiplier": {
+          "type": "number",
+          "minimum": 0.5,
+          "maximum": 2.0
+        },
+        "lead_time_multiplier": {
+          "type": "number",
+          "minimum": 0.5,
+          "maximum": 2.0
+        },
+        "guardrail_min_pct": {
+          "type": "number",
+          "default": 0.85
+        },
+        "guardrail_max_pct": {
+          "type": "number",
+          "default": 1.6
+        },
+        "winter_package_mode": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "POST /api/rates/simulate response": {
+      "type": "object",
+      "required": [
+        "recommended_rate",
+        "min_rate",
+        "max_rate",
+        "rationale"
+      ],
+      "properties": {
+        "recommended_rate": {
+          "type": "number",
+          "minimum": 0
+        },
+        "min_rate": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_rate": {
+          "type": "number",
+          "minimum": 0
+        },
+        "package_total_estimate": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "rationale": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "checkStatus": {
+      "type": "object",
+      "required": [
+        "latest",
+        "last_valid",
+        "age_hours",
+        "valid",
+        "fresh"
+      ],
+      "properties": {
+        "latest": {
+          "type": "string"
+        },
+        "last_valid": {
+          "type": "string"
+        },
+        "age_hours": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "valid": {
+          "type": "boolean"
+        },
+        "fresh": {
+          "type": "boolean"
+        }
+      }
+    },
+    "snapshotItem": {
+      "type": "object",
+      "required": [
+        "property_name",
+        "market",
+        "stay_date",
+        "tags",
+        "min_nights",
+        "rate",
+        "last_seen"
+      ],
+      "properties": {
+        "property_name": {
+          "type": "string"
+        },
+        "market": {
+          "type": "string",
+          "enum": [
+            "bethel",
+            "sunday_river",
+            "gorham",
+            "other"
+          ]
+        },
+        "stay_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "min_nights": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "rate": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "package_total_estimate": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "source": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "last_seen": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "alertItem": {
+      "type": "object",
+      "required": [
+        "id",
+        "property_name",
+        "stay_date",
+        "old_rate",
+        "new_rate",
+        "delta_pct",
+        "detected_at",
+        "acknowledged"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "property_name": {
+          "type": "string"
+        },
+        "market": {
+          "type": "string"
+        },
+        "stay_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "old_rate": {
+          "type": "number",
+          "minimum": 0
+        },
+        "new_rate": {
+          "type": "number",
+          "minimum": 0
+        },
+        "delta_pct": {
+          "type": "number"
+        },
+        "detected_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "acknowledged": {
+          "type": "boolean"
+        },
+        "acknowledged_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      }
+    },
+    "calendarDay": {
+      "type": "object",
+      "required": [
+        "date",
+        "tags"
+      ],
+      "properties": {
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "event_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "priority_score": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

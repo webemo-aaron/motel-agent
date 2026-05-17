@@ -1,0 +1,9 @@
+[Unit]
+Description=West Bethel Portal QA (seed + smoke + e2e)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/webemo-aaron/projects/webemo-hermes-agent
+ExecStart=/home/webemo-aaron/projects/webemo-hermes-agent/scripts/run_portal_qa_with_alert.sh

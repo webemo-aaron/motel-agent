@@ -1,0 +1,66 @@
+{
+  "markets": [
+    "Bethel, Maine",
+    "Gorham, New Hampshire"
+  ],
+  "properties": [
+    {
+      "name": "The Bethel Inn Resort",
+      "city": "Bethel, ME",
+      "search_terms": [
+        "Bethel Inn Resort Bethel ME rates",
+        "The Bethel Inn Resort booking"
+      ]
+    },
+    {
+      "name": "The Inn at the Rostay",
+      "city": "Bethel, ME",
+      "search_terms": [
+        "Inn at the Rostay Bethel Maine rates",
+        "Rostay Bethel hotel"
+      ]
+    },
+    {
+      "name": "Jordan Hotel at Sunday River",
+      "city": "Newry, ME",
+      "search_terms": [
+        "Jordan Hotel Sunday River rates"
+      ]
+    },
+    {
+      "name": "Snow Cap Inn",
+      "city": "Newry, ME",
+      "search_terms": [
+        "Snow Cap Inn Sunday River rates"
+      ]
+    },
+    {
+      "name": "Grand Summit Hotel",
+      "city": "Newry, ME",
+      "search_terms": [
+        "Grand Summit Hotel Sunday River rates"
+      ]
+    },
+    {
+      "name": "Top Notch Inn",
+      "city": "Gorham, NH",
+      "search_terms": [
+        "Top Notch Inn Gorham NH rates"
+      ]
+    },
+    {
+      "name": "Town and Country Inn & Resort",
+      "city": "Shelburne, NH",
+      "search_terms": [
+        "Town and Country Inn Shelburne NH rates"
+      ]
+    },
+    {
+      "name": "Moose Brook Motel",
+      "city": "Gorham, NH",
+      "search_terms": [
+        "Moose Brook Motel Gorham NH rates"
+      ]
+    }
+  ]
+}
