@@ -2478,6 +2478,148 @@ def sign_medium_stay_packet(packet_id: str, payload: dict, request: Request):
     return {'ok': True, 'packet': signed}
 
 
+
+
+class ExtensionEvaluateBody(BaseModel):
+    reservation_id: str
+    requested_check_out: str
+
+
+class ExtensionApproveBody(BaseModel):
+    reservation_id: str
+    requested_check_out: str
+    rationale: Optional[str] = ""
+
+
+def _active_reservations_all() -> list[dict]:
+    rows = []
+    for st in ("confirmed", "checked_in"):
+        try:
+            rows.extend(get_db().bookings_list(status=st))
+        except Exception:
+            continue
+    return rows
+
+
+def _reservation_by_id(reservation_id: str) -> Optional[dict]:
+    rid = str(reservation_id)
+    for row in _active_reservations_all():
+        if str(row.get("id")) == rid:
+            return row
+    return None
+
+
+def _date_range(start_iso: str, end_iso: str):
+    s = date.fromisoformat(start_iso)
+    e = date.fromisoformat(end_iso)
+    cur = s
+    while cur < e:
+        yield cur
+        cur += timedelta(days=1)
+
+
+def _extension_conflict_eval(reservation: dict, requested_check_out: str, cfg: dict) -> dict:
+    room_id = str(reservation.get("room_id", ""))
+    check_in = str(reservation.get("check_in", ""))
+    current_out = str(reservation.get("check_out", ""))
+    req_out_date = date.fromisoformat(str(requested_check_out))
+    cur_out_date = date.fromisoformat(current_out)
+    if req_out_date <= cur_out_date:
+        raise HTTPException(status_code=400, detail="requested_check_out must be after current check_out")
+
+    medium = (cfg.get("medium_stay") or {}) if isinstance(cfg, dict) else {}
+    protected_weekend_pct = int(medium.get("protected_inventory_weekend_pct", 30) or 30)
+    threshold = int(medium.get("extension_conflict_threshold", 70) or 70)
+
+    rows = _active_reservations_all()
+    total_rooms = max(1, len(get_db().room_list()))
+
+    hard_conflict = False
+    max_deficit = 0.0
+    impacted_days = []
+    for d in _date_range(cur_out_date.isoformat(), req_out_date.isoformat()):
+        occupied = 0
+        room_taken_by_other = False
+        for r in rows:
+            if str(r.get("id")) == str(reservation.get("id")):
+                continue
+            try:
+                ci = date.fromisoformat(str(r.get("check_in")))
+                co = date.fromisoformat(str(r.get("check_out")))
+            except Exception:
+                continue
+            if ci <= d < co:
+                occupied += 1
+                if str(r.get("room_id", "")) == room_id:
+                    room_taken_by_other = True
+        if room_taken_by_other:
+            hard_conflict = True
+        avail_pct = ((total_rooms - occupied - 1) / total_rooms) * 100.0
+        if d.weekday() in (4, 5):  # Fri/Sat protection
+            deficit = max(0.0, float(protected_weekend_pct) - avail_pct)
+            max_deficit = max(max_deficit, deficit)
+            if deficit > 0:
+                impacted_days.append(d.isoformat())
+
+    score = min(100, int(round(max_deficit * 3)))
+    decision = "accept"
+    requires_manager_approval = False
+    if hard_conflict:
+        decision = "decline"
+        score = 100
+    elif score >= threshold:
+        decision = "escalate"
+        requires_manager_approval = True
+
+    return {
+        "reservation_id": str(reservation.get("id")),
+        "room_id": room_id,
+        "current_check_out": current_out,
+        "requested_check_out": requested_check_out,
+        "protected_inventory_weekend_pct": protected_weekend_pct,
+        "extension_conflict_threshold": threshold,
+        "conflict_score": score,
+        "hard_conflict": hard_conflict,
+        "requires_manager_approval": requires_manager_approval,
+        "decision": decision,
+        "impacted_days": impacted_days,
+    }
+
+
+@app.post('/api/motel/manager/medium-stay/extensions/evaluate')
+def evaluate_medium_stay_extension(body: ExtensionEvaluateBody, request: Request):
+    _require_manager_role(request, {'frontdesk','manager','admin'})
+    cfg = _load_manager_config()
+    res = _reservation_by_id(body.reservation_id)
+    if not res:
+        raise HTTPException(status_code=404, detail='reservation not found')
+    result = _extension_conflict_eval(res, body.requested_check_out, cfg)
+    return {"ok": True, "evaluation": result}
+
+
+@app.post('/api/motel/manager/medium-stay/extensions/approve')
+def approve_medium_stay_extension(body: ExtensionApproveBody, request: Request):
+    _require_manager_write(request)
+    cfg = _load_manager_config()
+    res = _reservation_by_id(body.reservation_id)
+    if not res:
+        raise HTTPException(status_code=404, detail='reservation not found')
+    eval_result = _extension_conflict_eval(res, body.requested_check_out, cfg)
+    if eval_result.get('decision') == 'decline':
+        raise HTTPException(status_code=409, detail={'code': 'extension_declined', 'evaluation': eval_result})
+    updated = get_db().booking_update(str(res.get('id')), check_out=body.requested_check_out)
+    actor = request.headers.get('x-authenticated-user', 'manager') or 'manager'
+    _append_manager_audit('medium_stay_extension_approve', actor=actor, metadata={
+        'reservation_id': str(res.get('id')),
+        'from_check_out': str(res.get('check_out')),
+        'to_check_out': body.requested_check_out,
+        'conflict_score': eval_result.get('conflict_score'),
+        'decision': eval_result.get('decision'),
+        'rationale': body.rationale or '',
+    })
+    return {'ok': True, 'evaluation': eval_result, 'reservation': _decorate_reservation_stay_class(updated, cfg)}
+
+
 @app.get('/api/motel/manager/medium-stay/templates')
 def list_medium_stay_templates(request: Request, jurisdiction: Optional[str] = None, include_inactive: bool = False):
     _require_manager_role(request, {'viewer','frontdesk','manager','admin'})
