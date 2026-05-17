@@ -721,3 +721,86 @@ def test_reservations_include_stay_class(tmp_path, monkeypatch):
     assert listed and listed[0]["stay_class"] in {"short", "medium", "long"}
     by_guest = {row["guest_name"]: row for row in client.get("/api/motel/reservations?for_date=2031-05-10").json()}
     assert by_guest["Medium Stay"]["stay_class"] == "medium"
+
+
+def test_medium_stay_extension_evaluate_accept_and_approve(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch, "production")
+    manager_headers = {
+        "x-manager-token": "testtoken",
+        "x-authenticated-user": "m1",
+        "x-authenticated-role": "manager",
+    }
+    seed = client.patch('/api/motel/rooms/ms-room-1', json={"status": "available", "notes": "seed"})
+    assert seed.status_code == 200
+
+    book = client.post('/api/motel/kiosk/book', json={
+        "guest_name": "Ext Guest",
+        "check_in": "2031-07-01",
+        "check_out": "2031-07-10",
+        "room_id": "ms-room-1",
+        "rate_per_night": 139,
+        "stay_class": "medium",
+    })
+    assert book.status_code == 200
+    rid = book.json()["id"]
+
+    ev = client.post('/api/motel/manager/medium-stay/extensions/evaluate', headers=manager_headers, json={
+        "reservation_id": rid,
+        "requested_check_out": "2031-07-12",
+    })
+    assert ev.status_code == 200
+    assert ev.json()["evaluation"]["decision"] in {"accept", "escalate"}
+
+    ap = client.post('/api/motel/manager/medium-stay/extensions/approve', headers=manager_headers, json={
+        "reservation_id": rid,
+        "requested_check_out": "2031-07-12",
+        "rationale": "guest requested extension",
+    })
+    assert ap.status_code == 200
+    assert ap.json()["reservation"]["check_out"] == "2031-07-12"
+
+
+def test_medium_stay_extension_declines_hard_conflict(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch, "production")
+    manager_headers = {
+        "x-manager-token": "testtoken",
+        "x-authenticated-user": "m1",
+        "x-authenticated-role": "manager",
+    }
+    for room_id in ("ms-room-1",):
+        seed = client.patch(f'/api/motel/rooms/{room_id}', json={"status": "available", "notes": "seed"})
+        assert seed.status_code == 200
+
+    base = client.post('/api/motel/kiosk/book', json={
+        "guest_name": "Base Guest",
+        "check_in": "2031-08-01",
+        "check_out": "2031-08-05",
+        "room_id": "ms-room-1",
+        "rate_per_night": 139,
+        "stay_class": "short",
+    })
+    assert base.status_code == 200
+    rid = base.json()["id"]
+
+    conflict = client.post('/api/motel/kiosk/book', json={
+        "guest_name": "Conflict Guest",
+        "check_in": "2031-08-06",
+        "check_out": "2031-08-10",
+        "room_id": "ms-room-1",
+        "rate_per_night": 139,
+        "stay_class": "short",
+    })
+    assert conflict.status_code == 200
+
+    ev = client.post('/api/motel/manager/medium-stay/extensions/evaluate', headers=manager_headers, json={
+        "reservation_id": rid,
+        "requested_check_out": "2031-08-08",
+    })
+    assert ev.status_code == 200
+    assert ev.json()["evaluation"]["decision"] == "decline"
+
+    ap = client.post('/api/motel/manager/medium-stay/extensions/approve', headers=manager_headers, json={
+        "reservation_id": rid,
+        "requested_check_out": "2031-08-08",
+    })
+    assert ap.status_code == 409
