@@ -804,3 +804,34 @@ def test_medium_stay_extension_declines_hard_conflict(tmp_path, monkeypatch):
         "requested_check_out": "2031-08-08",
     })
     assert ap.status_code == 409
+
+
+def test_medium_stay_displacement_score_recommendations(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch, "production")
+    headers = {
+        "x-authenticated-user": "m1",
+        "x-authenticated-role": "manager",
+        "x-manager-token": "testtoken",
+    }
+
+    for room_id in ("ms-room-1", "ms-room-2", "ms-room-3"):
+        seed = client.patch(f"/api/motel/rooms/{room_id}", json={"status": "available", "notes": "seed"})
+        assert seed.status_code == 200
+
+    high = client.post('/api/motel/manager/medium-stay/pricing/displacement-score', headers=headers, json={
+        "check_in": "2031-09-05",
+        "check_out": "2031-09-25",
+        "rate_per_night": 160,
+        "protected_dates": ["2031-09-06", "2031-09-13"],
+    })
+    assert high.status_code == 200
+    r1 = high.json()['result']
+    assert r1['displacement_score'] >= 0
+    assert r1['recommendation'] in {'accept','review','decline'}
+
+    bad = client.post('/api/motel/manager/medium-stay/pricing/displacement-score', headers=headers, json={
+        "check_in": "2031-09-10",
+        "check_out": "2031-09-09",
+        "rate_per_night": 160,
+    })
+    assert bad.status_code == 400

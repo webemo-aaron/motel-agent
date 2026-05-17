@@ -2586,6 +2586,85 @@ def _extension_conflict_eval(reservation: dict, requested_check_out: str, cfg: d
     }
 
 
+
+
+class DisplacementScoreBody(BaseModel):
+    check_in: str
+    check_out: str
+    room_id: Optional[str] = None
+    rate_per_night: float = 0.0
+    protected_dates: list[str] = []
+
+
+def _displacement_score(body: DisplacementScoreBody, cfg: dict) -> dict:
+    try:
+        ci = date.fromisoformat(body.check_in)
+        co = date.fromisoformat(body.check_out)
+    except Exception:
+        raise HTTPException(status_code=400, detail='check_in/check_out must be ISO dates')
+    if co <= ci:
+        raise HTTPException(status_code=400, detail='check_out must be after check_in')
+
+    medium = (cfg.get('medium_stay') or {}) if isinstance(cfg, dict) else {}
+    protected_weekend_pct = int(medium.get('protected_inventory_weekend_pct', 30) or 30)
+    total_rooms = max(1, len(get_db().room_list()))
+    rows = _active_reservations_all()
+
+    protected = set(str(d) for d in (body.protected_dates or []))
+    nightly = []
+    protected_hits = 0
+    for d in _date_range(ci.isoformat(), co.isoformat()):
+        occupied = 0
+        for r in rows:
+            try:
+                rci = date.fromisoformat(str(r.get('check_in')))
+                rco = date.fromisoformat(str(r.get('check_out')))
+            except Exception:
+                continue
+            if rci <= d < rco:
+                occupied += 1
+        projected_occ_pct = ((occupied + 1) / total_rooms) * 100.0
+        avail_pct = 100.0 - projected_occ_pct
+        is_protected = d.weekday() in (4,5) or d.isoformat() in protected
+        if is_protected and avail_pct < protected_weekend_pct:
+            protected_hits += 1
+        nightly.append({
+            'date': d.isoformat(),
+            'projected_occupancy_pct': round(projected_occ_pct, 2),
+            'is_protected': is_protected,
+        })
+
+    avg_occ = sum(n['projected_occupancy_pct'] for n in nightly) / max(1, len(nightly))
+    length_factor = min(100, len(nightly) * 2)
+    protection_factor = min(100, protected_hits * 20)
+    score = min(100, int(round(avg_occ * 0.5 + length_factor * 0.2 + protection_factor * 0.3)))
+
+    recommendation = 'accept'
+    if score >= 75:
+        recommendation = 'decline'
+    elif score >= 50:
+        recommendation = 'review'
+
+    revenue = round(float(body.rate_per_night or 0.0) * len(nightly), 2)
+    return {
+        'displacement_score': score,
+        'recommendation': recommendation,
+        'nights': len(nightly),
+        'estimated_revenue': revenue,
+        'avg_projected_occupancy_pct': round(avg_occ, 2),
+        'protected_inventory_weekend_pct': protected_weekend_pct,
+        'protected_hit_count': protected_hits,
+        'nightly_forecast': nightly,
+    }
+
+
+@app.post('/api/motel/manager/medium-stay/pricing/displacement-score')
+def medium_stay_displacement_score(body: DisplacementScoreBody, request: Request):
+    _require_manager_role(request, {'viewer','frontdesk','manager','admin'})
+    cfg = _load_manager_config()
+    return {'ok': True, 'result': _displacement_score(body, cfg)}
+
+
 @app.post('/api/motel/manager/medium-stay/extensions/evaluate')
 def evaluate_medium_stay_extension(body: ExtensionEvaluateBody, request: Request):
     _require_manager_role(request, {'frontdesk','manager','admin'})

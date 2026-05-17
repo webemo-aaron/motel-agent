@@ -264,3 +264,17 @@ export interface QaSummary {
 
 export interface TelegramHealth { configured: boolean; has_bot_token: boolean; has_chat_id: boolean; }
 export interface KioskLookupMatch { reservation_id: string; guest_name: string; check_in: string; check_out: string; status: string; room_id: string; }
+
+
+export interface DisplacementScoreResult {
+  displacement_score: number;
+  recommendation: "accept" | "review" | "decline";
+  nights: number;
+  estimated_revenue: number;
+  avg_projected_occupancy_pct: number;
+  protected_hit_count: number;
+}
+
+export async function getDisplacementScore(payload: {check_in: string; check_out: string; rate_per_night: number; protected_dates?: string[]}) {
+  return post<{ ok: boolean; result: DisplacementScoreResult }>("/manager/medium-stay/pricing/displacement-score", payload);
+}

@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { api, ManagerStrategy, Stats, ManagerPlan, WeeklyBriefing, ManagerRecommendations, ManagerAutomationSettings, RateSummary } from "../lib/api";
+import { api, ManagerStrategy, Stats, ManagerPlan, WeeklyBriefing, ManagerRecommendations, ManagerAutomationSettings, RateSummary, DisplacementScoreResult, getDisplacementScore } from "../lib/api";
 
 interface Props { stats: Stats | null }
 const stages = ["new", "qualified", "proposal", "won", "lost"];
@@ -19,6 +19,7 @@ export default function ManagerPortal({ stats }: Props) {
   const [telegramHealth, setTelegramHealth] = useState<{ configured: boolean; has_bot_token: boolean; has_chat_id: boolean } | null>(null);
   const [telegramTestStatus, setTelegramTestStatus] = useState<string>("");
   const [selectedLeadHistory, setSelectedLeadHistory] = useState<Array<{ date: string; stage: string; notes: string }>>([]);
+  const [displacementScore, setDisplacementScore] = useState<DisplacementScoreResult | null>(null);
 
   const [campaign, setCampaign] = useState({ week: "Week 1", channel: "email", objective: "Direct bookings", offer: "2-night bundle", budget: 150, owner: "manager", status: "planned" });
   const [event, setEvent] = useState({ date: new Date().toISOString().slice(0,10), title: "Reunion Weekend", event_type: "reunion", expected_guests: 18, room_block: 8, notes: "House + kitchen access", status: "planned" });
